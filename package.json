@@ -1,0 +1,11 @@
+{
+  "name": "jonah-ost",
+  "private": true,
+  "description": "Jonah OST radio: one shuffled stream that every visitor hears in sync.",
+  "scripts": {
+    "build": "node scripts/build-songs.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
