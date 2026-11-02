@@ -91,6 +91,40 @@ h1 span { color: var(--accent); }
 .name { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .when { font-family: var(--mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* Station desk (editors only) */
+details.desk { border: 2px dashed var(--accent); border-radius: 16px; background: var(--surface); }
+details.desk > summary { list-style: none; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; font-family: var(--display); font-weight: 700; font-size: 15px; cursor: pointer; }
+details.desk > summary::-webkit-details-marker { display: none; }
+details.desk > summary small { font-family: var(--mono); font-weight: 400; font-size: 12px; color: var(--muted); }
+.deskbody { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 999px; font-weight: 700; font-size: 14px; }
+.btn-accent { background: var(--accent); color: var(--accent-ink); }
+.btn-ghost { border: 2px solid var(--line); }
+.btn-danger { color: var(--danger); border: 2px solid color-mix(in srgb, var(--danger) 40%, transparent); }
+.btn-danger-solid { background: var(--danger); color: #fff; }
+.btn svg { width: 16px; height: 16px; }
+.mrow { display: flex; flex-direction: column; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); }
+.mtop { display: flex; align-items: center; gap: 10px; }
+.mtop .name { flex: 1; }
+.mtop .when { flex-shrink: 0; }
+.mrow input { width: 100%; box-sizing: border-box; background: var(--bg); border: 2px solid var(--line); color: var(--fg); border-radius: 10px; padding: 8px 12px; font: inherit; }
+.acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.acts .btn { padding: 6px 12px; font-size: 13px; }
+.queue { display: flex; flex-direction: column; gap: 8px; }
+.qitem { border: 2px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); }
+.qtop { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.qname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.qstate { color: var(--muted); font-family: var(--mono); font-size: 12px; flex-shrink: 0; }
+.qitem.err .qstate { color: var(--danger); white-space: normal; flex-shrink: 1; text-align: left; }
+.qitem.err .qtop { flex-direction: column; gap: 2px; }
+.bar { height: 4px; background: var(--raise); border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.lockrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.lockrow input { flex: 1; min-width: 0; background: var(--bg); border: 2px solid var(--line); color: var(--fg); border-radius: 10px; padding: 9px 12px; font: inherit; }
+.lockrow input:focus { border-color: var(--accent); outline: none; }
+.err { color: var(--danger); font-size: 14px; margin: 0; }
+.tag { font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; flex-shrink: 0; }
+.desk-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .note { font-size: 14px; color: var(--muted); margin: 0; }
 
 
@@ -184,6 +218,32 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
     <div class="list" id="next"></div>
   </section>
 
+
+  <details class="desk" id="desk">
+    <summary>Station desk <small id="deskcount">Locked</small></summary>
+    <div class="deskbody">
+      <form id="lockForm" class="lockrow" autocomplete="off">
+        <label for="pw" class="note" style="flex-basis:100%">Enter the station password to add or edit songs.</label>
+        <input type="password" id="pw" placeholder="Password" autocomplete="current-password">
+        <button class="btn btn-accent" type="submit" id="unlockBtn">Unlock</button>
+        <p class="err" id="pwErr" hidden style="flex-basis:100%"></p>
+      </form>
+      <div id="deskOpen" hidden>
+        <div class="deskbody" style="padding:0">
+          <div class="desk-foot">
+            <button class="btn btn-accent" id="addBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Add songs
+            </button>
+            <button class="btn btn-ghost" id="lockBtn" type="button">Lock</button>
+          </div>
+          <p class="note">MP3, M4A or WAV, up to 60 MB each. New songs reach every listener within about a minute.</p>
+          <input type="file" id="fileIn" accept="audio/*,.mp3,.m4a,.wav,.aac" multiple hidden>
+          <div class="queue" id="queue"></div>
+          <div id="manage"></div>
+        </div>
+      </div>
+    </div>
+  </details>
 </div>
 
 <audio id="audio" preload="none" playsinline></audio>
@@ -357,23 +417,156 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
     if (samples.length) { samples.sort((a, b) => a - b); const o = samples[Math.floor(samples.length / 2)]; if (Math.abs(o) > 750) clockOffset = o; }
   }
 
-  // ---------- Boot ----------
-  async function loadSongs() {
+  // ---------- Song list ----------
+  // /api/songs merges songs uploaded from the desk with any committed to public/songs.
+  async function fetchSongs(fresh) {
     try {
-      const r = await fetch("songs.json", { cache: "no-cache" });
-      if (!r.ok) throw new Error(String(r.status));
-      const list = await r.json();
-      tracks = Array.isArray(list) ? list.filter((t) => t && t.file && t.duration >= 1) : [];
+      const r = await fetch("/api/songs" + (fresh ? "?fresh=1" : ""), { cache: fresh ? "no-store" : "default" });
+      if (r.ok) { const list = await r.json(); if (Array.isArray(list)) return list; }
+    } catch {}
+    const r = await fetch("songs.json", { cache: "no-cache" });   // fallback: repo songs only
+    if (!r.ok) throw new Error(String(r.status));
+    return (await r.json()).map((t) => ({ ...t, id: "r:" + t.id }));
+  }
+  async function loadSongs(fresh) {
+    try {
+      const list = await fetchSongs(fresh);
+      tracks = list.filter((t) => t && t.file && t.duration >= 1);
+      if ($("hint").dataset.err) { $("hint").textContent = "Everyone listening hears the same song at the same moment."; delete $("hint").dataset.err; }
     } catch {
-      $("hint").textContent = "The song list couldn't load. Check your connection and reload the page.";
+      if (!tracks.length) { $("hint").textContent = "The song list couldn't load. Check your connection and reload the page."; $("hint").dataset.err = "1"; }
     }
-    loaded = true; lastNextKey = ""; paint(); catchUp();
+    loaded = true; lastNextKey = ""; paint(); catchUp(); renderDesk();
   }
 
+  // ---------- Station desk ----------
+  let password = "";
+  let editing = null, confirmDel = null;
+  try { password = sessionStorage.getItem("jonah-pw") || ""; } catch {}
+
+  async function api(body) {
+    const r = await fetch("/api/songs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, password }) });
+    let data = {}; try { data = await r.json(); } catch {}
+    if (!r.ok) { const e = new Error(data.error || "Something went wrong. Try again."); e.status = r.status; throw e; }
+    return data;
+  }
+  function setUnlocked(on) {
+    $("lockForm").hidden = on; $("deskOpen").hidden = !on;
+    $("deskcount").textContent = on ? `${tracks.length} ${tracks.length === 1 ? "song" : "songs"}` : "Locked";
+    if (on) renderDesk();
+  }
+  $("lockForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("unlockBtn"), err = $("pwErr");
+    password = $("pw").value; err.hidden = true; btn.disabled = true; btn.textContent = "Checking…";
+    try {
+      await api({ action: "check" });
+      try { sessionStorage.setItem("jonah-pw", password); } catch {}
+      $("pw").value = ""; setUnlocked(true);
+    } catch (x) {
+      password = ""; err.textContent = x.status === 401 ? "That password isn't right." : x.message; err.hidden = false;
+    }
+    btn.disabled = false; btn.textContent = "Unlock";
+  });
+  $("lockBtn").onclick = () => { password = ""; try { sessionStorage.removeItem("jonah-pw"); } catch {} editing = confirmDel = null; setUnlocked(false); };
+
+  function renderDesk() {
+    if ($("deskOpen").hidden) return;
+    $("deskcount").textContent = `${tracks.length} ${tracks.length === 1 ? "song" : "songs"}`;
+    const box = $("manage"); box.innerHTML = "";
+    tracks.slice().sort((a, b) => a.title.localeCompare(b.title)).forEach((t) => {
+      const repo = t.id.startsWith("r:");
+      const r = document.createElement("div"); r.className = "mrow";
+      const top = document.createElement("div"); top.className = "mtop";
+      const img = document.createElement("img"); img.className = "thumb"; img.alt = ""; setImg(img, t);
+      const nm = document.createElement("span"); nm.className = "name"; nm.textContent = t.title;
+      const d = document.createElement("span"); d.className = "when"; d.textContent = fmt(t.duration);
+      top.append(img, nm, d);
+      if (repo) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = "GitHub"; tg.title = "Rename or delete this one in the repo"; top.appendChild(tg); }
+      else {
+        const b = document.createElement("button"); b.type = "button"; b.className = "btn btn-ghost"; b.style.padding = "6px 12px"; b.style.fontSize = "13px";
+        b.textContent = editing === t.id ? "Close" : "Edit";
+        b.onclick = () => { editing = editing === t.id ? null : t.id; confirmDel = null; renderDesk(); };
+        top.appendChild(b);
+      }
+      r.appendChild(top);
+      if (editing === t.id && !repo) {
+        const inp = document.createElement("input"); inp.id = "title-" + t.id.replace(/\W/g, ""); inp.value = t.title; inp.setAttribute("aria-label", "Song title");
+        const acts = document.createElement("div"); acts.className = "acts";
+        const mk = (label, cls, fn) => { const x = document.createElement("button"); x.type = "button"; x.className = "btn " + cls; x.textContent = label; x.onclick = fn; acts.appendChild(x); return x; };
+        const run = async (btn, body) => { btn.disabled = true; try { await api(body); editing = confirmDel = null; await loadSongs(true); } catch (x) { flash(x.message); btn.disabled = false; } };
+        const saveBtn = mk("Save name", "btn-accent", () => { const v = inp.value.trim(); if (!v || v === t.title) { editing = null; renderDesk(); return; } run(saveBtn, { action: "rename", id: t.id, title: v }); });
+        inp.onkeydown = (e) => { if (e.key === "Enter") saveBtn.click(); };
+        if (confirmDel === t.id) { const y = mk("Yes, delete it", "btn-danger-solid", () => run(y, { action: "delete", id: t.id })); mk("Keep it", "btn-ghost", () => { confirmDel = null; renderDesk(); }); }
+        else mk("Delete", "btn-danger", () => { confirmDel = t.id; renderDesk(); });
+        r.append(inp, acts);
+      }
+      box.appendChild(r);
+    });
+  }
+  function flash(msg) {
+    const d = document.createElement("div"); d.className = "qitem err";
+    d.innerHTML = '<div class="qtop"><span class="qname"></span><span class="qstate">Error</span></div>';
+    d.querySelector(".qname").textContent = msg; $("queue").prepend(d); setTimeout(() => d.remove(), 8000);
+  }
+
+  // ---------- Uploading ----------
+  let blobClient = null;
+  async function loadBlobClient() {
+    if (blobClient) return blobClient;
+    for (const url of ["https://esm.sh/@vercel/blob@2.7.0/client", "https://cdn.jsdelivr.net/npm/@vercel/blob@2.7.0/client/+esm"]) {
+      try { const m = await import(url); if (m && m.upload) return (blobClient = m); } catch {}
+    }
+    throw new Error("The uploader couldn't load. Check your connection and try again.");
+  }
+  const cleanName = (n) => n.replace(/\.[^.]+$/, "").replace(/_+/g, " ").replace(/\s+/g, " ").trim() || "Untitled";
+  const typeFor = (f) => f.type || ({ mp3: "audio/mpeg", m4a: "audio/mp4", mp4: "audio/mp4", aac: "audio/aac", wav: "audio/wav" })[(f.name.split(".").pop() || "").toLowerCase()] || "audio/mpeg";
+
+  $("addBtn").onclick = () => $("fileIn").click();
+  $("fileIn").onchange = async (e) => {
+    const files = [...e.target.files]; e.target.value = "";
+    let added = 0;
+    for (const f of files) if (await uploadOne(f)) added++;
+    if (added) await loadSongs(true);
+  };
+
+  async function uploadOne(file) {
+    const q = document.createElement("div"); q.className = "qitem";
+    q.innerHTML = '<div class="qtop"><span class="qname"></span><span class="qstate">Starting…</span></div><div class="bar"><i></i></div>';
+    q.querySelector(".qname").textContent = file.name;
+    const st = q.querySelector(".qstate"), bar = q.querySelector(".bar i");
+    const set = (txt, pct) => { st.textContent = txt; if (pct != null) bar.style.width = pct + "%"; };
+    $("queue").appendChild(q);
+    const fail = (msg) => { q.classList.add("err"); set(msg); setTimeout(() => q.remove(), 10000); return false; };
+    if (file.size > 60 * 1024 * 1024) return fail("Too big. Each song has to be under 60 MB.");
+    try {
+      const { upload } = await loadBlobClient();
+      const ext = (file.name.match(/\.[a-z0-9]+$/i) || [".mp3"])[0].toLowerCase();
+      const blob = await upload("station/incoming/song" + ext, file, {
+        access: "public",
+        handleUploadUrl: "/api/upload",
+        clientPayload: JSON.stringify({ password }),
+        contentType: typeFor(file),
+        multipart: file.size > 8 * 1024 * 1024,
+        onUploadProgress: (p) => set("Uploading…", Math.round(p.percentage * 0.85)),
+      });
+      set("Measuring…", 90);
+      await api({ action: "add", url: blob.url, title: cleanName(file.name) });
+      set("Added to rotation", 100); setTimeout(() => q.remove(), 2500);
+      return true;
+    } catch (x) {
+      const m = String(x && x.message || "");
+      return fail(/password/i.test(m) || x.status === 401 ? "That password isn't right anymore. Lock and unlock again." : m || "Upload failed. Try again.");
+    }
+  }
+
+  // ---------- Boot ----------
   setTuneUI(); paint();
   setInterval(paint, 500);
   setInterval(catchUp, 5000);
-  loadSongs().then(syncClock).then(() => { paint(); catchUp(); });
+  setInterval(() => { if (document.visibilityState === "visible") loadSongs(false); }, 60000);  // pick up new songs
+  loadSongs(false).then(syncClock).then(() => { paint(); catchUp(); });
+  if (password) api({ action: "check" }).then(() => setUnlocked(true)).catch(() => { password = ""; try { sessionStorage.removeItem("jonah-pw"); } catch {} });
 })();
 </script>
 </body>
