@@ -1,11 +1,15 @@
 {
   "name": "jonah-ost",
   "private": true,
+  "type": "module",
   "description": "Jonah OST radio: one shuffled stream that every visitor hears in sync.",
   "scripts": {
     "build": "node scripts/build-songs.mjs"
   },
+  "dependencies": {
+    "@vercel/blob": "2.7.0"
+  },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }
