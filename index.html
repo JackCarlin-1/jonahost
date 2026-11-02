@@ -236,7 +236,7 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
             </button>
             <button class="btn btn-ghost" id="lockBtn" type="button">Lock</button>
           </div>
-          <p class="note">MP3, M4A or WAV, up to 60 MB each. New songs reach every listener within about a minute.</p>
+          <p class="note">MP3, M4A or WAV, up to 60 MB each. <b>Play now</b> puts a song on air for everyone from the start; the shuffle carries on after it. Changes reach listeners within about a minute.</p>
           <input type="file" id="fileIn" accept="audio/*,.mp3,.m4a,.wav,.aac" multiple hidden>
           <div class="queue" id="queue"></div>
           <div id="manage"></div>
@@ -256,7 +256,9 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
   const STOP = '<path d="M6 6h12v12H6z"/>';
   const EPOCH = Date.UTC(2026, 10, 1); // the station's first broadcast; the schedule counts from here
 
-  let tracks = [];          // from songs.json, built from the songs folder on every deploy
+  let tracks = [];
+  let station = null;       // a force-started song: {id, startedAt}
+  let deskWriteAt = 0;      // after a desk change, trust it over the (slower) shared copy for a while          // from songs.json, built from the songs folder on every deploy
   let loaded = false;
   let clockOffset = 0;      // server time minus this device's time, in ms
   let tuned = false;
@@ -278,31 +280,52 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
   // so nothing has to stay running: the station is on whenever anyone looks.
   function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
   const playable = () => tracks.filter((t) => t.duration >= 1).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  function rawOrder(list, n) {
-    const r = mulberry((n * 2654435761) ^ (list.length * 97)), o = list.slice();
+  // `seed` makes each schedule's shuffle differ (the station's start, or the end of a force-started song).
+  function rawOrder(list, n, seed) {
+    const r = mulberry((n * 2654435761) ^ (list.length * 97) ^ seed), o = list.slice();
     for (let i = o.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [o[i], o[j]] = [o[j], o[i]]; }
     return o;
   }
-  function cycleOrder(list, n) {
-    const o = rawOrder(list, n);
-    if (o.length > 2) { const prev = rawOrder(list, n - 1); if (prev[prev.length - 1].id === o[0].id) [o[0], o[1]] = [o[1], o[0]]; }
+  function cycleOrder(list, n, seed, avoidFirst) {
+    const o = rawOrder(list, n, seed);
+    // Right after a force start, that song waits until the end of the first round.
+    const moveLast = (arr) => { const k = arr.findIndex((t) => t.id === avoidFirst); if (k >= 0 && arr.length > 1) arr.push(arr.splice(k, 1)[0]); return arr; };
+    if (n === 0 && avoidFirst) return moveLast(o);
+    if (o.length > 2) {
+      const prev = rawOrder(list, n - 1, seed);
+      const lastBefore = (n === 1 && avoidFirst ? moveLast(prev) : prev).at(-1).id;
+      if (o[0].id === lastBefore) [o[0], o[1]] = [o[1], o[0]];
+    }
     return o;
   }
-  function onAir(ms, ahead = 0) {
-    const list = playable(); if (!list.length) return null;
+  // The shuffle running from `start` (ms). After a force start, it begins fresh when that song ends.
+  function shuffleAt(list, ms, ahead, start, avoidFirst) {
+    const seed = Math.floor(start / 1000) | 0;
     const L = list.reduce((s, t) => s + t.duration, 0);
-    const e = (ms - EPOCH) / 1000;
+    const e = Math.max(0, (ms - start) / 1000);
     let n = Math.floor(e / L), pos = e - n * L;
-    let order = cycleOrder(list, n), i = 0;
+    let order = cycleOrder(list, n, seed, avoidFirst), i = 0;
     while (i < order.length - 1 && pos >= order[i].duration) { pos -= order[i].duration; i++; }
     const cur = { track: order[i], offset: Math.min(pos, order[i].duration) };
-    const queue = []; let start = order[i].duration - cur.offset, j = i + 1, cn = n;
+    const queue = []; let t0 = order[i].duration - cur.offset, j = i + 1, cn = n;
     while (queue.length < ahead) {
-      if (j >= order.length) { cn++; order = cycleOrder(list, cn); j = 0; }
-      queue.push({ track: order[j], startsIn: start }); start += order[j].duration; j++;
+      if (j >= order.length) { cn++; order = cycleOrder(list, cn, seed, avoidFirst); j = 0; }
+      queue.push({ track: order[j], startsIn: t0 }); t0 += order[j].duration; j++;
       if (queue.length >= list.length * 2) break;
     }
     cur.queue = queue; return cur;
+  }
+  function onAir(ms, ahead = 0) {
+    const list = playable(); if (!list.length) return null;
+    const forced = station && !station.missing && list.find((t) => t.id === station.id);
+    if (!forced) return shuffleAt(list, ms, ahead, EPOCH);
+    const end = station.startedAt + forced.duration * 1000;
+    if (ms >= end) return shuffleAt(list, ms, ahead, end, forced.id);
+    // The force-started song is on air; the shuffle lines up behind it.
+    const after = ahead ? shuffleAt(list, end, ahead - 1, end, forced.id) : null;
+    const wait = (end - ms) / 1000;
+    const queue = after ? [{ track: after.track, startsIn: wait }, ...after.queue.map((q) => ({ track: q.track, startsIn: q.startsIn + wait }))] : [];
+    return { track: forced, offset: Math.max(0, (ms - station.startedAt) / 1000), queue };
   }
 
   // ---------- Display ----------
@@ -422,16 +445,24 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
   async function fetchSongs(fresh) {
     try {
       const r = await fetch("/api/songs" + (fresh ? "?fresh=1" : ""), { cache: fresh ? "no-store" : "default" });
-      if (r.ok) { const list = await r.json(); if (Array.isArray(list)) return list; }
+      if (r.ok) {
+        const data = await r.json();
+        if (Array.isArray(data)) return { songs: data, onAir: null };
+        if (data && Array.isArray(data.songs)) return data;
+      }
     } catch {}
     const r = await fetch("songs.json", { cache: "no-cache" });   // fallback: repo songs only
     if (!r.ok) throw new Error(String(r.status));
-    return (await r.json()).map((t) => ({ ...t, id: "r:" + t.id }));
+    return { songs: (await r.json()).map((t) => ({ ...t, id: "r:" + t.id })), onAir: null };
+  }
+  function applyState(data) {
+    tracks = (data.songs || []).filter((t) => t && t.file && t.duration >= 1);
+    station = data.onAir && data.onAir.id ? data.onAir : null;
   }
   async function loadSongs(fresh) {
     try {
-      const list = await fetchSongs(fresh);
-      tracks = list.filter((t) => t && t.file && t.duration >= 1);
+      const data = await fetchSongs(fresh);
+      if (Date.now() - deskWriteAt > 90000) applyState(data);
       if ($("hint").dataset.err) { $("hint").textContent = "Everyone listening hears the same song at the same moment."; delete $("hint").dataset.err; }
     } catch {
       if (!tracks.length) { $("hint").textContent = "The song list couldn't load. Check your connection and reload the page."; $("hint").dataset.err = "1"; }
@@ -448,6 +479,10 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
     const r = await fetch("/api/songs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, password }) });
     let data = {}; try { data = await r.json(); } catch {}
     if (!r.ok) { const e = new Error(data.error || "Something went wrong. Try again."); e.status = r.status; throw e; }
+    if (Array.isArray(data.songs)) {
+      if (body.action !== "check") deskWriteAt = Date.now();
+      applyState(data); lastNextKey = ""; paint(); catchUp();
+    }
     return data;
   }
   function setUnlocked(on) {
@@ -482,6 +517,16 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
       const nm = document.createElement("span"); nm.className = "name"; nm.textContent = t.title;
       const d = document.createElement("span"); d.className = "when"; d.textContent = fmt(t.duration);
       top.append(img, nm, d);
+      const playing = station && station.id === t.id && onAir(now()) && onAir(now()).track.id === t.id;
+      const pb = document.createElement("button"); pb.type = "button"; pb.className = "btn btn-ghost play-now"; pb.style.padding = "6px 12px"; pb.style.fontSize = "13px";
+      pb.textContent = playing ? "On air" : "Play now"; pb.disabled = !!playing;
+      pb.setAttribute("aria-label", `Play ${t.title} now for everyone`);
+      pb.onclick = async () => {
+        pb.disabled = true; pb.textContent = "Starting…";
+        try { await api({ action: "play", id: t.id }); note(`"${t.title}" is on air. Listeners with the page open switch to it within about a minute.`); renderDesk(); }
+        catch (x) { flash(x.message); pb.disabled = false; pb.textContent = "Play now"; }
+      };
+      top.appendChild(pb);
       if (repo) { const tg = document.createElement("span"); tg.className = "tag"; tg.textContent = "GitHub"; tg.title = "Rename or delete this one in the repo"; top.appendChild(tg); }
       else {
         const b = document.createElement("button"); b.type = "button"; b.className = "btn btn-ghost"; b.style.padding = "6px 12px"; b.style.fontSize = "13px";
@@ -494,7 +539,7 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
         const inp = document.createElement("input"); inp.id = "title-" + t.id.replace(/\W/g, ""); inp.value = t.title; inp.setAttribute("aria-label", "Song title");
         const acts = document.createElement("div"); acts.className = "acts";
         const mk = (label, cls, fn) => { const x = document.createElement("button"); x.type = "button"; x.className = "btn " + cls; x.textContent = label; x.onclick = fn; acts.appendChild(x); return x; };
-        const run = async (btn, body) => { btn.disabled = true; try { await api(body); editing = confirmDel = null; await loadSongs(true); } catch (x) { flash(x.message); btn.disabled = false; } };
+        const run = async (btn, body) => { btn.disabled = true; try { await api(body); editing = confirmDel = null; renderDesk(); } catch (x) { flash(x.message); btn.disabled = false; } };
         const saveBtn = mk("Save name", "btn-accent", () => { const v = inp.value.trim(); if (!v || v === t.title) { editing = null; renderDesk(); return; } run(saveBtn, { action: "rename", id: t.id, title: v }); });
         inp.onkeydown = (e) => { if (e.key === "Enter") saveBtn.click(); };
         if (confirmDel === t.id) { const y = mk("Yes, delete it", "btn-danger-solid", () => run(y, { action: "delete", id: t.id })); mk("Keep it", "btn-ghost", () => { confirmDel = null; renderDesk(); }); }
@@ -503,6 +548,11 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
       }
       box.appendChild(r);
     });
+  }
+  function note(msg) {
+    const d = document.createElement("div"); d.className = "qitem";
+    d.innerHTML = '<div class="qtop"><span class="qname" style="white-space:normal"></span></div>';
+    d.querySelector(".qname").textContent = msg; $("queue").prepend(d); setTimeout(() => d.remove(), 7000);
   }
   function flash(msg) {
     const d = document.createElement("div"); d.className = "qitem err";
@@ -527,7 +577,7 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
     const files = [...e.target.files]; e.target.value = "";
     let added = 0;
     for (const f of files) if (await uploadOne(f)) added++;
-    if (added) await loadSongs(true);
+    if (added) renderDesk();
   };
 
   async function uploadOne(file) {
@@ -564,7 +614,7 @@ details.desk[open] .deskbody { animation: rise .3s ease both; }
   setTuneUI(); paint();
   setInterval(paint, 500);
   setInterval(catchUp, 5000);
-  setInterval(() => { if (document.visibilityState === "visible") loadSongs(false); }, 60000);  // pick up new songs
+  setInterval(() => { if (document.visibilityState === "visible") loadSongs(false); }, 20000);  // pick up new songs and force starts
   loadSongs(false).then(syncClock).then(() => { paint(); catchUp(); });
   if (password) api({ action: "check" }).then(() => setUnlocked(true)).catch(() => { password = ""; try { sessionStorage.removeItem("jonah-pw"); } catch {} });
 })();
